@@ -17,7 +17,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch m3_LLaMA model."""
+""" PyTorch M3_LLaMA model."""
 import math
 import warnings
 from typing import List, Optional, Tuple, Union
@@ -282,7 +282,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
-class LlamaAttention(nn.Module):
+class M3_LlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
     def __init__(self, config: LlamaConfig, layer_idx: Optional[int] = None):
@@ -317,6 +317,19 @@ class LlamaAttention(nn.Module):
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
         self._init_rope()
+        # 新增：判断当前层是否为 memory 层。若config中配置了memory_layers且包含当前layer，则设置 memory head 索引。
+        if hasattr(config, 'memory_layers') and config.memory_layers is not None and layer_idx in config.memory_layers:
+            self.is_memory_layer = True
+            self.memory_head_indices = config.memory_layers[layer_idx]  # 例如 [0] 或 [0,2]
+            self.memory_token_length = config.memory_token_length
+            self.num_memory_chunks = config.num_memory_chunks
+            self.memory_update_interval = config.memory_update_interval
+        else:
+            self.is_memory_layer = False
+            self.memory_head_indices = None
+            self.memory_token_length = 0
+            self.num_memory_chunks = 0
+            self.memory_update_interval = 0
 
     def _init_rope(self):
         if self.config.rope_scaling is None:
@@ -402,14 +415,19 @@ class LlamaAttention(nn.Module):
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
-
+        # Update kvcache
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+            if "input_ids" in kwargs:
+                cache_kwargs["input_ids"] = kwargs["input_ids"]
+            if self.is_memory_layer:
+                cache_kwargs["memory_head_indices"] = self.memory_head_indices
+            # update the key value states in this layer and return it after update
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
-
+        # (batch_size, num_key_value_heads, seq_len, head_dim) -> (batch_size, num_attention_heads, seq_len, head_dim)
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
-
+        # (batch_size, num_attention_heads, q_len, head_dim) * (batch_size, num_attention_heads, head_dim, seq_len) -> (batch_size, num_attention_heads, q_len, seq_len)
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
         if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
@@ -418,10 +436,17 @@ class LlamaAttention(nn.Module):
                 f" {attn_weights.size()}"
             )
 
+        # mask attention to memory weights for non-memory layers
+        memory_mask = torch.zeros_like(attn_weights)
+        memory_mask[:, :, :, :self.memory_token_length*self.num_memory_chunks] = float('-inf')
+        if self.is_memory_layer:
+            memory_mask[:, self.memory_head_indices, :, :self.memory_token_length*self.num_memory_chunks] = 0
+        attn_weights = attn_weights + memory_mask
+        # 更新 attention mask
         if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+            if attention_mask.size() != (bsz, 1, q_len, key_states.size(2)):
                 raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+                    f"Attention mask should be of size {(bsz, 1, q_len, key_states.size(2))}, but is {attention_mask.size()}"
                 )
             attn_weights = attn_weights + attention_mask
 
@@ -453,7 +478,7 @@ class LlamaAttention(nn.Module):
         return attn_output, attn_weights, past_key_value
 
 
-class LlamaFlashAttention2(LlamaAttention):
+class M3_LlamaFlashAttention2(M3_LlamaAttention):
     """
     Llama flash attention module. This module inherits from `LlamaAttention` as the weights of the module stays
     untouched. The only required change would be on the forward pass where it needs to correctly call the public API of
@@ -656,7 +681,7 @@ class LlamaFlashAttention2(LlamaAttention):
         )
 
 
-class LlamaSdpaAttention(LlamaAttention):
+class M3_LlamaSdpaAttention(M3_LlamaAttention):
     """
     Llama attention module using torch.nn.functional.scaled_dot_product_attention. This module inherits from
     `LlamaAttention` as the weights of the module stays untouched. The only changes are on the forward pass to adapt to
@@ -744,13 +769,13 @@ class LlamaSdpaAttention(LlamaAttention):
 
 
 LLAMA_ATTENTION_CLASSES = {
-    "eager": LlamaAttention,
-    "flash_attention_2": LlamaFlashAttention2,
-    "sdpa": LlamaSdpaAttention,
+    "eager": M3_LlamaAttention,
+    "flash_attention_2": M3_LlamaFlashAttention2,
+    "sdpa": M3_LlamaSdpaAttention,
 }
 
 
-class LlamaDecoderLayer(nn.Module):
+class M3_LlamaDecoderLayer(nn.Module):
     def __init__(self, config: LlamaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -940,7 +965,7 @@ LLAMA_INPUTS_DOCSTRING = r"""
     "The bare LLaMA Model outputting raw hidden-states without any specific head on top.",
     LLAMA_START_DOCSTRING,
 )
-class LlamaModel(LlamaPreTrainedModel):
+class M3_LlamaModel(LlamaPreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
 
@@ -955,7 +980,7 @@ class LlamaModel(LlamaPreTrainedModel):
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [LlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [M3_LlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self._use_sdpa = config._attn_implementation == "sdpa"
         self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
@@ -1103,14 +1128,18 @@ class LlamaModel(LlamaPreTrainedModel):
         )
 
 
-class LlamaForCausalLM(LlamaPreTrainedModel):
+class M3_LlamaForCausalLM(LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = LlamaModel(config)
+        self.model = M3_LlamaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
+        # 添加生成历史追踪
+        self.generated_tokens = {}  # batch_idx -> count
+        self.last_tokens = {}  # batch_idx -> tokens list
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1229,6 +1258,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
     ):
+        # Model will use this function to prepare inputs for generation before calling the forward function
         if past_key_values is not None:
             if isinstance(past_key_values, Cache):
                 cache_length = past_key_values.get_seq_length()
@@ -1311,7 +1341,7 @@ class LlamaForSequenceClassification(LlamaPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
-        self.model = LlamaModel(config)
+        self.model = M3_LlamaModel(config)
         self.score = nn.Linear(config.hidden_size, self.num_labels, bias=False)
 
         # Initialize weights and apply final processing
@@ -1356,6 +1386,7 @@ class LlamaForSequenceClassification(LlamaPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+
         hidden_states = transformer_outputs[0]
         logits = self.score(hidden_states)
 
