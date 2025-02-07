@@ -989,6 +989,18 @@ class M3_LlamaModel(LlamaPreTrainedModel):
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
         self.post_init()
+        if hasattr(config, 'memory_layers') and config.memory_layers is not None:
+            self.memory_token_length = config.memory_token_length
+            self.num_memory_chunks = config.num_memory_chunks
+            self.memory_update_interval = config.memory_update_interval
+        else:
+            self.memory_token_length = 0
+            self.num_memory_chunks = 0
+            self.memory_update_interval = 0
+        # 添加生成历史追踪
+        self.generated_tokens = {}  # batch_idx -> count
+        self.last_tokens = {}  # batch_idx -> tokens list
+
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -1047,7 +1059,7 @@ class M3_LlamaModel(LlamaPreTrainedModel):
                 past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
             )
             position_ids = position_ids.unsqueeze(0)
-
+        # turn input_ids to embeddings
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
@@ -1090,6 +1102,7 @@ class M3_LlamaModel(LlamaPreTrainedModel):
                     past_key_values,
                     output_attentions,
                     use_cache,
+                    input_ids=input_ids,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -1099,6 +1112,7 @@ class M3_LlamaModel(LlamaPreTrainedModel):
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
+                    input_ids=input_ids,
                 )
 
             hidden_states = layer_outputs[0]
@@ -1136,10 +1150,6 @@ class M3_LlamaForCausalLM(LlamaPreTrainedModel):
         self.model = M3_LlamaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-
-        # 添加生成历史追踪
-        self.generated_tokens = {}  # batch_idx -> count
-        self.last_tokens = {}  # batch_idx -> tokens list
 
         # Initialize weights and apply final processing
         self.post_init()
