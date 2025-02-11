@@ -1164,7 +1164,7 @@ class M3_LlamaForCausalLM(LlamaPreTrainedModel):
         # Initialize memory cache
         self.memory_cache = MemoryKVCache(
             model=self,
-            tokenizer=self.tokenizer
+            tokenizer=self.tokenizer,
             retrieval_model=self.retrieval_model,
             memory_token_length=16,
             num_memory_chunks=5,
