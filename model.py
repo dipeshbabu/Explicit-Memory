@@ -1157,20 +1157,6 @@ class M3_LlamaForCausalLM(LlamaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-        # We already have defined a tokenizer and retrieval model
-        self. tokenizer = Tokenizer # Replace tokenizer
-        self.retrieval_model = Retriever # Replace retrieval model
-
-        # Initialize memory cache
-        self.memory_cache = MemoryKVCache(
-            model=self,
-            tokenizer=self.tokenizer
-            retrieval_model=self.retrieval_model,
-            memory_token_length=16,
-            num_memory_chunks=5,
-            memory_update_interval=64,device="cuda"
-        )
-
     def get_input_embeddings(self):
         return self.model.embed_tokens
 
@@ -1230,19 +1216,6 @@ class M3_LlamaForCausalLM(LlamaPreTrainedModel):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-        for layer_idx, layer in enumerate(self.layers):
-            outputs = layer(input_ids, attention_mask=attention_mask)
-            key_states = outputs.key_states
-            value_states = outputs.value_states
-
-            if "memory_head_indices" in kwargs:
-                self.memory_cache.update(
-                    key_states=key_states,
-                    value_states=value_states,
-                    layer_idx=layer_idx,
-                    cache_kwargs={"input_ids": input_ids, "memory_head_indices": kwargs["memory_head_indices"]}
-                )
-
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states

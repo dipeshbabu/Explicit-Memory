@@ -190,6 +190,8 @@ class MemoryKVCache(Base_Memory_3):
         memory_keys = []
         memory_values = []
         for idx in indices[0]:
+            # @todo: why tuple?
+            # @todo: when to update memory cache?
             cache_key = tuple[idx]
             if cache_key in self.memory_cache:
                 memory_keys, memory_values = self.memory_cache[cache_key]
@@ -222,31 +224,26 @@ class MemoryKVCache(Base_Memory_3):
         
         # Check if in generation mode
         if hasattr(cache_kwargs, 'input_ids'):  # If cache has been initialized
-            if self.model.training:
-                # Training mode: Do not update memory
-                return key_states, value_states
-            else:
-                # Inference mode: Update memeory as usual
-                memory_head_indices = cache_kwargs.get("memory_head_indices", None)
-                input_ids = cache_kwargs.get("input_ids", None)
-                batch_size = input_ids.size(0)
+            memory_head_indices = cache_kwargs.get("memory_head_indices", None)
+            input_ids = cache_kwargs.get("input_ids", None)
+            batch_size = input_ids.size(0)
+            
+            for batch_idx in range(batch_size):
+                # Get generation count from model
+                if batch_idx not in self.last_tokens:
+                    self.last_tokens[batch_idx] = []
+                self.last_tokens[batch_idx].append(input_ids[batch_idx, :])
+                tokens_count = len(self.last_tokens[batch_idx])
                 
-                for batch_idx in range(batch_size):
-                    # Get generation count from model
-                    if batch_idx not in self.last_tokens:
-                        self.last_tokens[batch_idx] = []
-                    self.last_tokens[batch_idx].append(input_ids[batch_idx, :])
-                    tokens_count = len(self.last_tokens[batch_idx])
-                    
-                    # Update memory every self.memory_update_interval tokens
-                    if tokens_count > 0 and tokens_count % self.memory_update_interval == 0:
-                        recent_tokens = self.last_tokens[batch_idx]
-                        if recent_tokens:
-                            recent_text = self.tokenizer.decode(recent_tokens)
-                            if memory_head_indices is not None:
-                                self.update_memory(recent_text, batch_idx, layer_idx, memory_head_indices)
-                        self.last_tokens[batch_idx] = []
-    
+                # Update memory every self.memory_update_interval tokens
+                if tokens_count > 0 and tokens_count % self.memory_update_interval == 0:
+                    recent_tokens = self.last_tokens[batch_idx]
+                    if recent_tokens:
+                        recent_text = self.tokenizer.decode(recent_tokens)
+                        if memory_head_indices is not None:
+                            self.update_memory(recent_text, batch_idx, layer_idx, memory_head_indices)
+                    self.last_tokens[batch_idx] = []
+
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
     
     # @todo: If memory is too large, need to change encoding part to only encode memory head portion
