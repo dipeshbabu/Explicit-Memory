@@ -445,6 +445,10 @@ class M3_LlamaAttention(nn.Module):
         if self.is_memory_layer:
             memory_mask[:, self.memory_head_indices, :, :self.memory_token_length*self.num_memory_chunks] = 0
         attn_weights = attn_weights + memory_mask
+        
+        # Compute attention weights
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        
         # 更新 attention mask
         if attention_mask is not None:
             if attention_mask.size() != (bsz, 1, q_len, key_states.size(2)):
@@ -452,6 +456,21 @@ class M3_LlamaAttention(nn.Module):
                     f"Attention mask should be of size {(bsz, 1, q_len, key_states.size(2))}, but is {attention_mask.size()}"
                 )
             attn_weights = attn_weights + attention_mask
+
+        # Token sparsification: Only attend to top-k tokens
+        top_k = 8 # Number of tokens to attend to
+        _, top_k_indices = torch.topk(attn_weights, k=top_k, dim=-1)
+
+        # Mask out other tokens
+        sparse_attn_weights = torch.zeros_like(attn_weights)
+        sparse_attn_weights.scatter_(-1, top_k_indices, 1.0)
+
+        # Use sparse attention weights for computation
+        sparse_attn_weights = nn.functional.softmax(sparse_attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        sparse_attn_weights = nn.functional.dropout(sparse_attn_weights, p=self.attention_dropout, training=self.training)
+
+        # Compute context vector with sparse atttention
+        attn_output = torch.matmul(sparse_attn_weights, value_states)
 
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
@@ -1168,7 +1187,8 @@ class M3_LlamaForCausalLM(LlamaPreTrainedModel):
             retrieval_model=self.retrieval_model,
             memory_token_length=16,
             num_memory_chunks=5,
-            memory_update_interval=64,device="cuda"
+            memory_update_interval=64,
+            device="cuda"
         )
 
     def get_input_embeddings(self):
@@ -1230,15 +1250,13 @@ class M3_LlamaForCausalLM(LlamaPreTrainedModel):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-        for layer_idx, layer in enumerate(self.layers):
-            outputs = layer(input_ids, attention_mask=attention_mask)
-            key_states = outputs.key_states
-            value_states = outputs.value_states
+        if "memory_head_indices" in kwargs:
+            past_key_values = self. model(input_ids, attention_mask=attention_mask, use_cache=True).past_key_values
 
-            if "memory_head_indices" in kwargs:
+        for layer_idx, (key_states, value_states) in enumerate(past_key_values):
                 self.memory_cache.update(
-                    key_states=key_states,
-                    value_states=value_states,
+                    key_states=key_states[0],
+                    value_states=value_states[0],
                     layer_idx=layer_idx,
                     cache_kwargs={"input_ids": input_ids, "memory_head_indices": kwargs["memory_head_indices"]}
                 )

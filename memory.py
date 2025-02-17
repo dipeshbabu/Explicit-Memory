@@ -187,6 +187,34 @@ class MemoryKVCache(Base_Memory_3):
         distances, indices = self.vector_db.search(
             query_embedding.reshape(1, -1), self.num_memory_chunks
         )
+
+        # Token sparsification: Only attend to top-k tokens
+        top_k = 8  # Number of tokens to attend to
+        _, top_k_indices = torch.topk(distances, k=top_k, dim=-1)
+        
+        # Mask out other tokens
+        sparse_indices = torch.zeros_like(indices)
+        sparse_indices.scatter_(-1, top_k_indices, 1.0)
+        
+        # Select only top-k indices
+        selected_indices = indices[sparse_indices == 1]
+
+        # Select specific parts of the memory chunks
+        selected_memory_keys = []
+        selected_memory_values = []
+        for idx in selected_indices:
+            chunk = self.memory_chunks[int(idx)]
+
+            # Selected only specific parts of the memory chunk
+            selected_keys = chunk.key_states[:, :, :8, :] # First 8 tokens
+            selected_values = chunk.value_states[:, :, :8, :]
+            selected_memory_keys.append(selected_keys)
+            selected_memory_values.append(selected_memory_values)
+
+        # Update memory cache with selected parts
+        selected_memory_keys = torch.cat(selected_memory_keys, dim=2)
+        selected_memory_values = torch.cat(selected_memory_values, dim=2)
+        
         memory_keys = []
         memory_values = []
         for idx in indices[0]:
