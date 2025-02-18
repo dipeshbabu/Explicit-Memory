@@ -8,6 +8,7 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 import os
 from retriever import Retriever
+from config import M3_LlamaConfig
 # This class implements an explicit memory database that can encode knowledge, store memory to disk,
 # load memory from disk, and retrieve memory to return a MemoryCache that can be directly used in inference
 # Stores a vector database for querying, computed from plain text
@@ -33,18 +34,16 @@ class Base_Memory_3(DynamicCache):
         model: PreTrainedModel,  # Model
         tokenizer: PreTrainedTokenizer,  # tokenizer
         retrieval_model: Retriever,  # Model for text embedding
-        memory_length: int = 128,  # Length of each memory chunk
-        num_memory_chunks: int = 5,  # Number of chunks to keep in memory
-        memory_update_interval: int = 64,  # Update memory every N generated tokens
+        config: M3_LlamaConfig,
         device: str = "cuda"
     ):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
         self.retrieval_model = retrieval_model
-        self.memory_length = memory_length
-        self.num_memory_chunks = num_memory_chunks
-        self.memory_update_interval = memory_update_interval
+        self.memory_length = config.memory_token_length
+        self.num_memory_chunks = config.num_memory_chunks
+        self.memory_update_interval = config.memory_update_interval
         self.device = device
         
         # Initialize vector database
@@ -66,7 +65,7 @@ class Base_Memory_3(DynamicCache):
         
         for text in knowledge_base:
             # Split text into chunks
-            tokens = self.tokenizer(text, return_tensors="pt", truncation=True, add_special_tokens=False).to(self.device)
+            tokens = self.tokenizer(text, return_tensors="pt", truncation=True, add_special_tokens=False)
             
             # Split into chunks of memory_length
             for i in range(0, tokens.input_ids.size(1), self.memory_length):
@@ -76,8 +75,7 @@ class Base_Memory_3(DynamicCache):
                     padding = torch.zeros(
                         1, 
                         self.memory_length - chunk_tokens.size(1), 
-                        dtype=torch.long,
-                        device=self.device
+                        dtype=torch.long
                     )
                     chunk_tokens = torch.cat([chunk_tokens, padding], dim=1)
                 
@@ -87,8 +85,8 @@ class Base_Memory_3(DynamicCache):
                 
                 # Calculate chunk embedding
                 with torch.no_grad():
-                    embedding = self.retrieval_model.encode(chunk_text, convert_to_tensor=True)
-                    embedding = torch.nn.functional.normalize(embedding, p=2, dim=0)
+                    embedding = self.retrieval_model.encode(chunk_text)
+                    embedding = torch.nn.functional.normalize(embedding, p=2, dim=1)[0]
                     chunk_embeddings.append(embedding.cpu().numpy())
                 
                 # Calculate chunk key-value states, without attention mask to allow global attention
@@ -97,8 +95,7 @@ class Base_Memory_3(DynamicCache):
                     # Create all-ones attention mask to allow all positions to attend to each other
                     attention_mask = torch.ones(
                         (1, chunk_tokens.size(1)), 
-                        dtype=torch.bool, 
-                        device=self.device
+                        dtype=torch.bool
                     )
                     outputs = self.model(
                         chunk_tokens,
@@ -123,6 +120,15 @@ class Base_Memory_3(DynamicCache):
         # Save to disk
         self._save_to_disk(save_path)
     
+    def retrieve_memory(self, query: str, top_k: int):
+        """Retrieve memory from disk"""
+        with torch.no_grad():
+            query_embedding = self.retrieval_model.encode(query)
+            query_embedding = torch.nn.functional.normalize(query_embedding, p=2, dim=1)[0]
+            query_embedding = query_embedding.cpu().numpy()
+            distances, indices = self.vector_db.search(query_embedding.reshape(1, -1), top_k)
+        return distances, indices
+
     def _save_to_disk(self, save_path: str):
         """Save database to disk"""
         faiss.write_index(self.vector_db, os.path.join(save_path, "vector_db.index"))
@@ -160,18 +166,14 @@ class MemoryKVCache(Base_Memory_3):
         model: PreTrainedModel,  # Model
         tokenizer: PreTrainedTokenizer,
         retrieval_model,
-        memory_token_length: int = 16,
-        num_memory_chunks: int = 5,
-        memory_update_interval: int = 64,
+        config: M3_LlamaConfig,
         device: str = "cuda"
     ):
         super().__init__(
             model,
             tokenizer,
             retrieval_model,
-            memory_length=memory_token_length,
-            num_memory_chunks=num_memory_chunks,
-            memory_update_interval=memory_update_interval,
+            config,
             device=device
         )
         self.memory_cache = {} # Cache to store frequently accessed memory chunks
@@ -180,14 +182,11 @@ class MemoryKVCache(Base_Memory_3):
         self, query: str, batch_idx: int, layer_idx: int, memory_head_indices: List[int]
     ):
         """Only update KV cache for specified layer and corresponding memory heads"""
-        with torch.no_grad():
-            query_embedding = self.retrieval_model.encode(query, convert_to_tensor=True)
-            query_embedding = torch.nn.functional.normalize(query_embedding, p=2, dim=0)
-            query_embedding = query_embedding.cpu().numpy()
-        distances, indices = self.vector_db.search(
-            query_embedding.reshape(1, -1), self.num_memory_chunks
-        )
 
+        distances, indices = self.retrieve_memory(query, self.num_memory_chunks)
+
+        
+        # token sparsification here
         # Token sparsification: Only attend to top-k tokens
         top_k = 8  # Number of tokens to attend to
         _, top_k_indices = torch.topk(distances, k=top_k, dim=-1)
@@ -214,6 +213,7 @@ class MemoryKVCache(Base_Memory_3):
         # Update memory cache with selected parts
         selected_memory_keys = torch.cat(selected_memory_keys, dim=2)
         selected_memory_values = torch.cat(selected_memory_values, dim=2)
+        # token sparsification end
         
         memory_keys = []
         memory_values = []
