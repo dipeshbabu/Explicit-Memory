@@ -208,7 +208,7 @@ class MemoryKVCache(Base_Memory_3):
             selected_keys = chunk.key_states[:, :, :8, :] # First 8 tokens
             selected_values = chunk.value_states[:, :, :8, :]
             selected_memory_keys.append(selected_keys)
-            selected_memory_values.append(selected_memory_values)
+            selected_memory_values.append(selected_values)
 
         # Update memory cache with selected parts
         selected_memory_keys = torch.cat(selected_memory_keys, dim=2)
