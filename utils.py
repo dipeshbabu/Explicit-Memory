@@ -7,7 +7,9 @@ from accelerate import Accelerator
 from retriever import Retriever
 
 def load_model(model_path: str="/root/autodl-tmp/meta-llama/Llama-3.1-8B", retrieval_model_path: str="/root/autodl-tmp/BAAI/bge-m3") -> tuple[M3_LlamaForCausalLM, AutoTokenizer, MemoryKVCache]:
-    tokenizer = AutoTokenizer.from_pretrained(model_path,padding_side='left', device_map="auto")
+    tokenizer = AutoTokenizer.from_pretrained(model_path, device_map="auto")
+    tokenizer.add_special_tokens({'pad_token': '<|finetune_right_pad_id|>'})
+    tokenizer.pad_token_id = 128004
     modeling_llama.LlamaConfig = M3_LlamaConfig
     try:
         model = M3_LlamaForCausalLM.from_pretrained(model_path, device_map="auto").half()

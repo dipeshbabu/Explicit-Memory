@@ -72,9 +72,9 @@ class Base_Memory_3(DynamicCache):
                 chunk_tokens = tokens.input_ids[:, i:i+self.memory_length]
                 if chunk_tokens.size(1) < self.memory_length:
                     # Pad the last incomplete chunk
-                    padding = torch.zeros(
-                        1, 
-                        self.memory_length - chunk_tokens.size(1), 
+                    padding = torch.full(
+                        (1, self.memory_length - chunk_tokens.size(1)), 
+                        self.tokenizer.pad_token_id,
                         dtype=torch.long
                     )
                     chunk_tokens = torch.cat([chunk_tokens, padding], dim=1)
@@ -93,15 +93,15 @@ class Base_Memory_3(DynamicCache):
                 with torch.no_grad():
                     # @todo: attention sparsification here
                     # Create all-ones attention mask to allow all positions to attend to each other
-                    attention_mask = torch.ones(
-                        (1, chunk_tokens.size(1)), 
-                        dtype=torch.bool
-                    )
+                    # attention_mask = torch.ones(
+                    #     (1, chunk_tokens.size(1)), 
+                    #     dtype=torch.bool
+                    # )
                     outputs = self.model(
                         chunk_tokens,
                         output_hidden_states=True,
                         use_cache=True,
-                        attention_mask=attention_mask  # Don't use attention mask
+                        is_causal=False
                     )
                     # Get key and value states from first layer
                     key_states = outputs.past_key_values[0][0].detach()  # (batch_size, num_heads, seq_len, head_dim)
@@ -186,34 +186,34 @@ class MemoryKVCache(Base_Memory_3):
         distances, indices = self.retrieve_memory(query, self.num_memory_chunks)
 
         
-        # token sparsification here
-        # Token sparsification: Only attend to top-k tokens
-        top_k = 8  # Number of tokens to attend to
-        _, top_k_indices = torch.topk(distances, k=top_k, dim=-1)
+        # # token sparsification here
+        # # Token sparsification: Only attend to top-k tokens
+        # top_k = 8  # Number of tokens to attend to
+        # _, top_k_indices = torch.topk(distances, k=top_k, dim=-1)
         
-        # Mask out other tokens
-        sparse_indices = torch.zeros_like(indices)
-        sparse_indices.scatter_(-1, top_k_indices, 1.0)
+        # # Mask out other tokens
+        # sparse_indices = torch.zeros_like(indices)
+        # sparse_indices.scatter_(-1, top_k_indices, 1.0)
         
-        # Select only top-k indices
-        selected_indices = indices[sparse_indices == 1]
+        # # Select only top-k indices
+        # selected_indices = indices[sparse_indices == 1]
 
-        # Select specific parts of the memory chunks
-        selected_memory_keys = []
-        selected_memory_values = []
-        for idx in selected_indices:
-            chunk = self.memory_chunks[int(idx)]
+        # # Select specific parts of the memory chunks
+        # selected_memory_keys = []
+        # selected_memory_values = []
+        # for idx in selected_indices:
+        #     chunk = self.memory_chunks[int(idx)]
 
-            # Selected only specific parts of the memory chunk
-            selected_keys = chunk.key_states[:, :, :8, :] # First 8 tokens
-            selected_values = chunk.value_states[:, :, :8, :]
-            selected_memory_keys.append(selected_keys)
-            selected_memory_values.append(selected_values)
+        #     # Selected only specific parts of the memory chunk
+        #     selected_keys = chunk.key_states[:, :, :8, :] # First 8 tokens
+        #     selected_values = chunk.value_states[:, :, :8, :]
+        #     selected_memory_keys.append(selected_keys)
+        #     selected_memory_values.append(selected_values)
 
-        # Update memory cache with selected parts
-        selected_memory_keys = torch.cat(selected_memory_keys, dim=2)
-        selected_memory_values = torch.cat(selected_memory_values, dim=2)
-        # token sparsification end
+        # # Update memory cache with selected parts
+        # selected_memory_keys = torch.cat(selected_memory_keys, dim=2)
+        # selected_memory_values = torch.cat(selected_memory_values, dim=2)
+        # # token sparsification end
         
         memory_keys = []
         memory_values = []

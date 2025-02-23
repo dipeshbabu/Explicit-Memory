@@ -362,6 +362,7 @@ class M3_LlamaAttention(nn.Module):
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         input_ids: Optional[torch.LongTensor] = None,
+        is_causal: Optional[bool] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
 
@@ -436,16 +437,30 @@ class M3_LlamaAttention(nn.Module):
                 **kwargs,
             )
         else:
-            attn_output, attn_weights = attention_interface(
-                self,
-                query_states,
-                key_states,
-                value_states,
-                attention_mask,
-                dropout=0.0 if not self.training else self.attention_dropout,
-                scaling=self.scaling,
-                **kwargs,
-            )
+            if is_causal is None:
+                attn_output, attn_weights = attention_interface(
+                    self,
+                    query_states,
+                    key_states,
+                    value_states,
+                    attention_mask,
+                    dropout=0.0 if not self.training else self.attention_dropout,
+                    scaling=self.scaling,
+                    **kwargs,
+                )
+            else:
+                attn_output, attn_weights = attention_interface(
+                    self,
+                    query_states,
+                    key_states,
+                    value_states,
+                    attention_mask,
+                    dropout=0.0 if not self.training else self.attention_dropout,
+                    scaling=self.scaling,
+                    is_causal=is_causal,
+                    **kwargs,
+                )
+
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
@@ -474,6 +489,7 @@ class M3_LlamaDecoderLayer(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         input_ids: Optional[torch.LongTensor] = None,
+        is_causal: Optional[bool] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
@@ -491,6 +507,7 @@ class M3_LlamaDecoderLayer(nn.Module):
             cache_position=cache_position,
             position_embeddings=position_embeddings,
             input_ids=input_ids,
+            is_causal=is_causal,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -676,6 +693,7 @@ class M3_LlamaModel(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        is_causal: Optional[bool] = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -738,6 +756,7 @@ class M3_LlamaModel(LlamaPreTrainedModel):
                     cache_position,
                     position_embeddings,
                     input_ids=input_ids,
+                    is_causal=is_causal,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -750,6 +769,7 @@ class M3_LlamaModel(LlamaPreTrainedModel):
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
                     input_ids=input_ids,
+                    is_causal=is_causal,
                     **flash_attn_kwargs,
                 )
 
@@ -944,6 +964,7 @@ class M3_LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         num_logits_to_keep: int = 0,
+        is_causal: Optional[bool] = None,
         **kwargs: Unpack[KwargsForCausalLM],
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
@@ -994,6 +1015,7 @@ class M3_LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             cache_position=cache_position,
+            is_causal=is_causal,
             **kwargs,
         )
 
