@@ -14,7 +14,7 @@ if __name__ == "__main__":
     cache = MemoryKVCache(model=model, tokenizer=tokenizer, retrieval_model=retrieval_model, config=model.config)
     model, tokenizer, retrieval_model, query, cache = accelerator.prepare(model, tokenizer, retrieval_model, query, cache)
     cache.load_from_disk("/root/Explicit-Memory")
-
+    cache.init_memory_cache(query)
     response = generate(query, model, tokenizer, cache)
     print(response)
     

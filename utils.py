@@ -5,7 +5,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers.models.llama import modeling_llama
 from accelerate import Accelerator
 from retriever import Retriever
-
+import torch
 def load_model(model_path: str="/root/autodl-tmp/meta-llama/Llama-3.1-8B", retrieval_model_path: str="/root/autodl-tmp/BAAI/bge-m3") -> tuple[M3_LlamaForCausalLM, AutoTokenizer, MemoryKVCache]:
     tokenizer = AutoTokenizer.from_pretrained(model_path, device_map="auto")
     tokenizer.add_special_tokens({'pad_token': '<|finetune_right_pad_id|>'})
@@ -19,6 +19,13 @@ def load_model(model_path: str="/root/autodl-tmp/meta-llama/Llama-3.1-8B", retri
     retrieval_model = Retriever(retrieval_model_path)
     return model, tokenizer, retrieval_model
 
+def pre_process(query: str, memory_token_length: int, tokenizer: AutoTokenizer):
+    special_tokens = tokenizer.special_tokens_map
+    bos_token = special_tokens['bos_token']
+    pad_token = special_tokens['pad_token']
+    query = "Reference: " + pad_token*memory_token_length + bos_token + query 
+    return query
+
 def get_response(inputs,outputs,tokenizer,num_return):
     responses_list=[]
     batch_return=[]
@@ -30,6 +37,17 @@ def get_response(inputs,outputs,tokenizer,num_return):
             responses_list.append(batch_return)
             batch_return=[]
     return responses_list
+
+def expand_kv_cache(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    This is the equivalent of torch.repeat_interleave(x, dim=0, repeats=n_rep). The hidden states go from (batch,
+    layer_num, num_key_value_heads, seqlen, head_dim) to (batch*n_rep, layer_num, num_key_value_heads, seqlen, head_dim)
+    """
+    batch, layer_num, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, None, :, :, :, :].expand(batch, n_rep, layer_num, num_key_value_heads, slen, head_dim)
+    return hidden_states.reshape(batch*n_rep, layer_num, num_key_value_heads, slen, head_dim)
 
 def generate(prompt: str, model: M3_LlamaForCausalLM, tokenizer: AutoTokenizer, cache: MemoryKVCache):
     # accelerator = Accelerator()
@@ -45,6 +63,8 @@ def generate(prompt: str, model: M3_LlamaForCausalLM, tokenizer: AutoTokenizer, 
     "transformers_version": "4.43.0.dev0"
     }
     model = model.eval()
+    memory_token_length = model.config.memory_token_length
+    prompt = pre_process(prompt, memory_token_length, tokenizer)
     input_ids = tokenizer(prompt, return_tensors="pt")["input_ids"]
     # input_ids = input_ids.to('cuda')
     outputs = model.generate(input_ids, past_key_values=cache, **gen_kwargs)

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import os
 from retriever import Retriever
 from config import M3_LlamaConfig
+from utils import expand_kv_cache
 # This class implements an explicit memory database that can encode knowledge, store memory to disk,
 # load memory from disk, and retrieve memory to return a MemoryCache that can be directly used in inference
 # Stores a vector database for querying, computed from plain text
@@ -35,7 +36,6 @@ class Base_Memory_3(DynamicCache):
         tokenizer: PreTrainedTokenizer,  # tokenizer
         retrieval_model: Retriever,  # Model for text embedding
         config: M3_LlamaConfig,
-        device: str = "cuda"
     ):
         super().__init__()
         self.model = model
@@ -44,7 +44,7 @@ class Base_Memory_3(DynamicCache):
         self.memory_length = config.memory_token_length
         self.num_memory_chunks = config.num_memory_chunks
         self.memory_update_interval = config.memory_update_interval
-        self.device = device
+        self.memory_layers = config.memory_layers
         
         # Initialize vector database
         self.vector_db = faiss.IndexFlatIP(self.retrieval_model.config.hidden_size)
@@ -62,7 +62,9 @@ class Base_Memory_3(DynamicCache):
         
         # Ensure save path exists
         os.makedirs(save_path, exist_ok=True)
-        
+        prefix_text = "Reference: "
+        prefix_ids = self.tokenizer(prefix_text, return_tensors="pt", add_special_tokens=True)["input_ids"]
+        self.prefix_len = prefix_ids.size(1)
         for text in knowledge_base:
             # Split text into chunks
             tokens = self.tokenizer(text, return_tensors="pt", truncation=True, add_special_tokens=False)
@@ -78,7 +80,7 @@ class Base_Memory_3(DynamicCache):
                         dtype=torch.long
                     )
                     chunk_tokens = torch.cat([chunk_tokens, padding], dim=1)
-                
+                chunk_tokens_full = torch.cat([prefix_ids, chunk_tokens], dim=1)
                 # Get text representation of chunk
                 chunk_text = self.tokenizer.decode(chunk_tokens[0], skip_special_tokens=True)
                 chunk_texts.append(chunk_text)
@@ -98,14 +100,17 @@ class Base_Memory_3(DynamicCache):
                     #     dtype=torch.bool
                     # )
                     outputs = self.model(
-                        chunk_tokens,
+                        chunk_tokens_full,
                         output_hidden_states=True,
                         use_cache=True,
                         is_causal=False
                     )
                     # Get key and value states from first layer
-                    key_states = outputs.past_key_values[0][0].detach()  # (batch_size, num_heads, seq_len, head_dim)
-                    value_states = outputs.past_key_values[0][1].detach()
+                    past_key_values = outputs.past_key_values
+                    key_states = past_key_values.key_cache[:,:,:,self.prefix_len:,:].detach()  # (layer_num, batch_size, num_kv_heads, seq_len, head_dim)
+                    value_states = past_key_values.value_cache[:,:,:,self.prefix_len:,:].detach()
+                    self.prefix_key_states = past_key_values.key_cache[:,:,:,:self.prefix_len,:].detach()
+                    self.prefix_value_states = past_key_values.value_cache[:,:,:,:self.prefix_len,:].detach()
                     chunk_keys.append(key_states)
                     chunk_values.append(value_states)
         
@@ -167,19 +172,41 @@ class MemoryKVCache(Base_Memory_3):
         tokenizer: PreTrainedTokenizer,
         retrieval_model,
         config: M3_LlamaConfig,
-        device: str = "cuda"
     ):
         super().__init__(
             model,
             tokenizer,
             retrieval_model,
-            config,
-            device=device
+            config
         )
         self.memory_cache = {} # Cache to store frequently accessed memory chunks
+        special_tokens = self.tokenizer.special_tokens_map
+        bos_token = special_tokens['bos_token']
+        pad_token = special_tokens['pad_token']
+        self.memory_prefix = "Reference: " + pad_token*self.memory_length*self.num_memory_chunks + bos_token
     
+
+    def init_memory_cache(self, prompt: List[str]|str):
+        """Initialize memory cache for a new batch"""
+        if isinstance(prompt, str):
+            memory_key_padding = torch.zeros_like(self.prefix_key_states)
+            memory_value_padding = torch.zeros_like(self.prefix_value_states)
+            self.key_cache = torch.cat([self.prefix_key_states, memory_key_padding], dim=-2)
+            self.value_cache = torch.cat([self.prefix_value_states, memory_value_padding], dim=-2)
+            self.update_memory(prompt, 0)
+        else:
+            bsz = len(prompt)
+            memory_key_padding = torch.zeros_like(self.prefix_key_states)
+            memory_value_padding = torch.zeros_like(self.prefix_value_states)
+            self.key_cache = torch.cat([self.prefix_key_states, memory_key_padding], dim=-2)
+            self.value_cache = torch.cat([self.prefix_value_states, memory_value_padding], dim=-2)
+            self.key_cache = expand_kv_cache(self.key_cache, bsz)
+            self.value_cache = expand_kv_cache(self.value_cache, bsz)
+            for batch_idx, p in enumerate(prompt):
+                self.update_memory(p, batch_idx)
+
     def update_memory(
-        self, query: str, batch_idx: int, layer_idx: int, memory_head_indices: List[int]
+        self, query: str, batch_idx: int
     ):
         """Only update KV cache for specified layer and corresponding memory heads"""
 
@@ -232,12 +259,12 @@ class MemoryKVCache(Base_Memory_3):
         mem_seq_len = memory_keys.size(2)  # memory_token_length * num_memory_chunks
         
         # Only update heads configured as memory heads in this layer
-        if layer_idx in memory_head_indices:
-            designated_heads = memory_head_indices  # list of head indices
+        for layer_idx in self.memory_layers.keys():
+            designated_heads = self.memory_layers[layer_idx]  # list of head indices
             for head_idx in designated_heads:
-                self.key_cache[layer_idx][batch_idx:batch_idx+1, head_idx:head_idx+1, :mem_seq_len] = \
+                self.key_cache[layer_idx][batch_idx:batch_idx+1, head_idx:head_idx+1, :mem_seq_len, :] = \
                     memory_keys[:, head_idx:head_idx+1, :mem_seq_len, :]
-                self.value_cache[layer_idx][batch_idx:batch_idx+1, head_idx:head_idx+1, :mem_seq_len] = \
+                self.value_cache[layer_idx][batch_idx:batch_idx+1, head_idx:head_idx+1, :mem_seq_len, :] = \
                     memory_values[:, head_idx:head_idx+1, :mem_seq_len, :]
     
     def update(
@@ -251,7 +278,7 @@ class MemoryKVCache(Base_Memory_3):
         key_states, value_states = super().update(key_states, value_states, layer_idx, cache_kwargs)
         
         # Check if in generation mode
-        if hasattr(cache_kwargs, 'input_ids'):  # If cache has been initialized
+        if hasattr(cache_kwargs, 'input_ids') and layer_idx == 0:  # If cache has been initialized
             memory_head_indices = cache_kwargs.get("memory_head_indices", None)
             input_ids = cache_kwargs.get("input_ids", None)
             batch_size = input_ids.size(0)
@@ -268,8 +295,7 @@ class MemoryKVCache(Base_Memory_3):
                     recent_tokens = self.last_tokens[batch_idx]
                     if recent_tokens:
                         recent_text = self.tokenizer.decode(recent_tokens)
-                        if memory_head_indices is not None:
-                            self.update_memory(recent_text, batch_idx, layer_idx, memory_head_indices)
+                        self.update_memory(recent_text, batch_idx)
                     self.last_tokens[batch_idx] = []
 
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
