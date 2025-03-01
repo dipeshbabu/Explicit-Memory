@@ -17,7 +17,7 @@ def test_knowledge_base():
         "5+5=10"
     ]
     model, tokenizer, retrieval_model, cache, knowledge_base = accelerator.prepare(model, tokenizer, retrieval_model, cache, knowledge_base)
-    save_path = "./"
+    save_path = "./memory"
 
     cache.process_knowledge_base(knowledge_base, save_path)
 
@@ -25,8 +25,8 @@ def test_knowledge_base():
 
     _, indices = cache.retrieve_memory(query, 2)
     indices = indices[0]
-    retrieved_knowledge = [cache.memory_chunks[i].text for i in indices]
-    print(retrieved_knowledge)
+    cache._load_memory_chunk_from_disk(save_path, indices)
+    print(cache.memory_chunks)
 
 test_knowledge_base()
 

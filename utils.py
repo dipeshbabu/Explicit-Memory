@@ -38,17 +38,6 @@ def get_response(inputs,outputs,tokenizer,num_return):
             batch_return=[]
     return responses_list
 
-def expand_kv_cache(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """
-    This is the equivalent of torch.repeat_interleave(x, dim=0, repeats=n_rep). The hidden states go from (batch,
-    layer_num, num_key_value_heads, seqlen, head_dim) to (batch*n_rep, layer_num, num_key_value_heads, seqlen, head_dim)
-    """
-    batch, layer_num, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, None, :, :, :, :].expand(batch, n_rep, layer_num, num_key_value_heads, slen, head_dim)
-    return hidden_states.reshape(batch*n_rep, layer_num, num_key_value_heads, slen, head_dim)
-
 def generate(prompt: str, model: M3_LlamaForCausalLM, tokenizer: AutoTokenizer, cache: MemoryKVCache):
     # accelerator = Accelerator()
     # gen_kwargs = {'num_return_sequences': 1, 'min_new_tokens': 10 ,'max_length':2048, 'num_beams':1,
