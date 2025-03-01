@@ -4,7 +4,7 @@ from accelerate import Accelerator
 
 def test_knowledge_base():
     accelerator = Accelerator()
-    model, tokenizer, retrieval_model = load_model()
+    model, tokenizer, retrieval_model = load_model(model_path="/root/autodl-tmp/meta-llama/Llama-3.2-3B")
     cache = MemoryKVCache(model=model, tokenizer=tokenizer, retrieval_model=retrieval_model, config=model.config)
     # print(model)
     # print(tokenizer)
@@ -26,7 +26,9 @@ def test_knowledge_base():
     _, indices = cache.retrieve_memory(query, 2)
     indices = indices[0]
     cache._load_memory_chunk_from_disk(save_path, indices)
-    print(cache.memory_chunks)
+    print([len(cache.memory_chunks[i].key_states) for i in range(len(cache.memory_chunks))])
+    print([cache.memory_chunks[i].key_states[0].shape for i in range(len(cache.memory_chunks))])
+    print([cache.memory_chunks[i].text for i in range(len(cache.memory_chunks))])
 
 test_knowledge_base()
 

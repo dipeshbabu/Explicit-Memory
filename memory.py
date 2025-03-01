@@ -174,7 +174,7 @@ class Base_Memory_3(DynamicCache):
         chunk_embeddings = []
         
         prefix_text = "Reference: "
-        prefix_ids = self.tokenizer(prefix_text, return_tensors="pt", add_special_tokens=True)["input_ids"]
+        prefix_ids = self.tokenizer(prefix_text, return_tensors="pt", add_special_tokens=True)["input_ids"].to(self.model.device)
         self.prefix_len = prefix_ids.size(1)
         with torch.no_grad():
             outputs = self.model(
@@ -183,11 +183,12 @@ class Base_Memory_3(DynamicCache):
             )
             # Get key and value states from first layer
             prefix_past_key_values = outputs.past_key_values
-        self.prefix_key_states = deepcopy(prefix_past_key_values.key_cache.detach())
-        self.prefix_value_states = deepcopy(prefix_past_key_values.value_cache.detach())
+        self.prefix_key_states = deepcopy(prefix_past_key_values.key_cache)
+        self.prefix_value_states = deepcopy(prefix_past_key_values.value_cache)
         idx = 0
         for text in knowledge_base:
             # Split text into chunks
+            cur_prefix_key_values = deepcopy(prefix_past_key_values)
             tokens = self.tokenizer(text, return_tensors="pt", truncation=True, add_special_tokens=False)
             remainder = tokens.input_ids.size(1) % self.memory_length
             if remainder > 0:
@@ -200,11 +201,11 @@ class Base_Memory_3(DynamicCache):
                 tokens.input_ids = torch.cat([tokens.input_ids, padding], dim=1)
             with torch.no_grad():
                 outputs = self.model(
-                    tokens.input_ids,
+                    tokens.input_ids.to(self.model.device),
                     output_hidden_states=True,
                     use_cache=True,
                     is_causal=False,
-                    past_key_values=prefix_past_key_values
+                    past_key_values=cur_prefix_key_values
                 )
                 # Get key and value states from first layer
                 past_key_values = outputs.past_key_values
