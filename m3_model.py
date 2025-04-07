@@ -50,6 +50,7 @@ from transformers.utils import (
 from transformers.models.llama.configuration_llama import LlamaConfig
 from memory import Base_Memory_3, M3_cache
 import math
+from torch.nn import init
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "meta-llama/Llama-2-7b-hf"
@@ -267,19 +268,29 @@ def m3_sdpa_attention_forward(
     # 现在不对，要分开生成两部分memory mask，再拼起来
     L, S = query.size(-2), key.size(-2)-memory_total_length-1
     attn_bias = torch.zeros(L, S, dtype=query.dtype, device=query.device)
-    temp_mask = torch.ones(L, S, dtype=torch.bool).tril(diagonal=0)
+    temp_mask = torch.ones(L, S, dtype=torch.bool, device=query.device).tril(diagonal=0)
     attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
     attn_bias.to(query.dtype)
 
     memory_bias = torch.zeros(L, memory_total_length, dtype=query.dtype, device=query.device)
     memory_mask = torch.zeros(L, memory_total_length, dtype=query.dtype, device=query.device)
-    for i in range(0, L, memory_update_interval):
-        for j in range(0, memory_total_length, memory_single_length):
+    l = L//memory_update_interval
+    m = memory_total_length//memory_single_length
+    for i in range(0, l+1, 1):
+        for j in range(0, m+1, 1):
             if i == j:
-                if i+memory_update_interval > L:
-                    memory_mask[i:, j:j+memory_single_length] = 1
+                if i*memory_update_interval+memory_update_interval > L:
+                    memory_mask[i*memory_update_interval:, j*memory_single_length:j*memory_single_length+memory_single_length] = 1
                 else:
-                    memory_mask[i:i+memory_update_interval, j:j+memory_single_length] = 1
+                    memory_mask[i*memory_update_interval:i*memory_update_interval+memory_update_interval, j*memory_single_length:j*memory_single_length+memory_single_length] = 1
+            
+    # for i in range(0, L, memory_update_interval):
+    #     for j in range(0, memory_total_length, memory_single_length):
+    #         if (i == 0 and j == 0) or (L//i == memory_total_length//j):
+    #             if i+memory_update_interval > L:
+    #                 memory_mask[i:, j:j+memory_single_length] = 1
+    #             else:
+    #                 memory_mask[i:i+memory_update_interval, j:j+memory_single_length] = 1
     memory_bias.masked_fill_(memory_mask.logical_not(), float("-inf"))
     ref_bos_bias = torch.ones(L, 1, dtype=query.dtype, device=query.device)
     attn_bias = torch.cat((ref_bos_bias, memory_bias, attn_bias), dim=1)
@@ -359,9 +370,9 @@ class M3_LlamaAttention(nn.Module):
         if memories is not None:
             memory_key_states = memories.key_states[self.layer_idx]
             memory_value_states = memories.value_states[self.layer_idx]
-            key_states = torch.cat((memory_key_states, key_states), dim=1)
-            value_states = torch.cat((memory_value_states, value_states), dim=1)
-            memory_total_length = memory_key_states.size(-2)-1
+            key_states = torch.cat((memory_key_states, key_states), dim=2)
+            value_states = torch.cat((memory_value_states, value_states), dim=2)
+            memory_total_length = memory_key_states.size(-2)
             memory_single_length = self.config.memory_token_length*self.config.num_memory_chunks
             memory_update_interval = self.config.memory_update_interval
 
@@ -626,7 +637,8 @@ class M3_LlamaModel(LlamaPreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
-        self.reference_bos = nn.Parameter(torch.randn(config.hidden_size))
+        self.reference_bos = nn.Parameter(torch.empty(config.hidden_size))
+        init.normal_(self.reference_bos, mean=0.0, std=0.02)
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -708,21 +720,28 @@ class M3_LlamaModel(LlamaPreTrainedModel):
             if past_seen_tokens == 0:
                 # First input, need to increase position_ids to make room for memories and reference bos token.
                 # Also, add a new ref bos token to the input.
+                bos = False
+                mask = input_ids != 128001
+                position_ids = mask.long().cumsum(-1) - 1
+                position_ids.masked_fill_(mask == 0, 1)
                 for bsz in range(position_ids.shape[0]):
                     for i in range(position_ids.shape[1]):
-                        if position_ids[bsz, i] == 0:
-                            bos = True
-                            position_ids[bsz, i] += self.config.memory_token_length*self.config.num_memory_chunks+1
                         if bos:
                             position_ids[bsz, i] += self.config.memory_token_length*self.config.num_memory_chunks+1
+                        elif position_ids[bsz, i] == 0:
+                            bos = True
+                            position_ids[bsz, i] += self.config.memory_token_length*self.config.num_memory_chunks+1
                     bos = False
-                hidden_states = torch.cat([self.reference_bos.unsqueeze(0).expand(inputs_embeds.shape[0], -1), inputs_embeds], dim=1)
+                reference_bos = self.reference_bos.unsqueeze(0).unsqueeze(0).expand(inputs_embeds.shape[0], -1, -1)
+                hidden_states = torch.cat([reference_bos, inputs_embeds], dim=1)
                 position_ids = torch.cat([torch.zeros(position_ids.shape[0], 1, device=position_ids.device), position_ids], dim=1)
             else:
                 if past_seen_tokens % self.config.memory_update_interval == 0:
                     # Update memories
                     memories = memory_processor.update(past_key_values.generated_tokens[-self.config.memory_update_interval:])
                     hidden_states = inputs_embeds
+        else:
+            hidden_states = inputs_embeds
 
         causal_mask = self._update_causal_mask(
             attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions

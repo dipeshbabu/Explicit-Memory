@@ -199,8 +199,8 @@ class Base_Memory_3():
             else:
                 keys = [torch.cat([self.memory_chunks[j].key_states[i] for j in range(len(self.memory_chunks))], dim=2) for i in range(self.model.config.num_hidden_layers)]  # shape: (1, num_heads, mem_seq_len, head_dim)
                 values = [torch.cat([self.memory_chunks[j].value_states[i] for j in range(len(self.memory_chunks))], dim=2) for i in range(self.model.config.num_hidden_layers)]
-                memory_keys = [torch.cat(memory_keys[i], keys[i], dim=0) for i in range(self.model.config.num_hidden_layers)]
-                memory_values = [torch.cat(memory_values[i], values[i], dim=0) for i in range(self.model.config.num_hidden_layers)]
+                memory_keys = [torch.cat([memory_keys[i], keys[i]], dim=0) for i in range(self.model.config.num_hidden_layers)]
+                memory_values = [torch.cat([memory_values[i], values[i]], dim=0) for i in range(self.model.config.num_hidden_layers)]
         return Memory(memory_keys, memory_values)
 
     def _save_to_disk(self, save_path: str):
@@ -224,8 +224,8 @@ class Base_Memory_3():
                 tokens = memory_chunk.token_ids.to(self.model.device)
                 outputs = self.model(tokens, use_cache=True, is_encoding_memory=True)
         past_key_values = outputs.past_key_values
-        key_states = [past_key_values.key_cache[i][:,:,self.prefix_len:,:].detach() for i in range(self.model.config.num_hidden_layers)]  # (layer_num, batch_size, num_kv_heads, seq_len, head_dim)
-        value_states = [past_key_values.value_cache[i][:,:,self.prefix_len:,:].detach() for i in range(self.model.config.num_hidden_layers)]
+        key_states = [past_key_values.key_cache[i][:, :, 1:, :].detach() for i in range(self.model.config.num_hidden_layers)]  # (layer_num, batch_size, num_kv_heads, seq_len, head_dim)
+        value_states = [past_key_values.value_cache[i][:, :, 1:, :].detach() for i in range(self.model.config.num_hidden_layers)]
         return key_states, value_states
 
     def _load_memory_chunk_from_disk(self, load_path: str, indices: List[int], update_disk: bool=False, use_cache: bool=True):

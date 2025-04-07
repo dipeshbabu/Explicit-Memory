@@ -10,8 +10,8 @@ import torch.nn.functional as F
 
 def load_model(model_path: str="/root/autodl-tmp/meta-llama/Llama-3.1-8B", retrieval_model_path: str="/root/autodl-tmp/BAAI/bge-m3") -> tuple[M3_LlamaForCausalLM, AutoTokenizer, MemoryKVCache]:
     tokenizer = AutoTokenizer.from_pretrained(model_path, device_map="auto")
-    # tokenizer.add_special_tokens({'pad_token': '<|finetune_right_pad_id|>'})
-    tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.add_special_tokens({'pad_token': '<|finetune_right_pad_id|>'})
+    tokenizer.pad_token_id = 128004
     modeling_llama.LlamaConfig = M3_LlamaConfig
     try:
         model = M3_LlamaForCausalLM.from_pretrained(model_path, device_map="auto").half()
@@ -20,6 +20,19 @@ def load_model(model_path: str="/root/autodl-tmp/meta-llama/Llama-3.1-8B", retri
         model = M3_LlamaForCausalLM.from_pretrained(model_path, ignore_mismatched_sizes=True, device_map="auto").half()
     retrieval_model = Retriever(retrieval_model_path)
     return model, tokenizer, retrieval_model
+
+def load_model_normal(model_path: str="/root/autodl-tmp/meta-llama/Llama-3.1-8B", retrieval_model_path: str="/root/autodl-tmp/BAAI/bge-m3") -> tuple[M3_LlamaForCausalLM, AutoTokenizer, MemoryKVCache]:
+    tokenizer = AutoTokenizer.from_pretrained(model_path, device_map="auto")
+    tokenizer.add_special_tokens({'pad_token': '<|finetune_right_pad_id|>'})
+    tokenizer.pad_token_id = 128004
+    # modeling_llama.LlamaConfig = M3_LlamaConfig
+    try:
+        model = M3_LlamaForCausalLM.from_pretrained(model_path, device_map="auto").half()
+    except Exception as e:
+        print(e)
+        model = M3_LlamaForCausalLM.from_pretrained(model_path, ignore_mismatched_sizes=True, device_map="auto").half()
+    # retrieval_model = Retriever(retrieval_model_path)
+    return model, tokenizer
 
 def pre_process(query: str, memory_token_length: int, tokenizer: AutoTokenizer):
     special_tokens = tokenizer.special_tokens_map
@@ -90,7 +103,7 @@ def generate_with_cache(prompt: list[torch.Tensor], model: M3_LlamaForCausalLM, 
     # input_ids = tokenizer(prompt, return_tensors="pt")["input_ids"]
     input_ids = prompt.to(model.device)
     # input_ids = input_ids.to('cuda')
-    outputs = model.generate(input_ids, past_key_values=cache, **gen_kwargs)
+    outputs = model.m3_generate(input_ids, past_key_values=cache, **gen_kwargs)
     response = get_response(input_ids,outputs,tokenizer,1)
     return response[0][0]
 
@@ -100,3 +113,9 @@ def generate_with_cache(prompt: list[torch.Tensor], model: M3_LlamaForCausalLM, 
     # outputs = accelerator.unwrap_model(model).generate(input_ids, previous_key_values=cache)
     # response = get_response(input_ids,outputs,tokenizer,1)
     # return response[0][0]
+
+if __name__ == "__main__":
+    model, tokenizer = load_model_normal("/root/autodl-tmp/Explicit-Memory/model/m3_llama_3.2_3b")
+    query = "1+1=2, 2+2="
+    response = generate(query, model, tokenizer)
+    print(response)

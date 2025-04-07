@@ -26,7 +26,7 @@ def test_knowledge_base():
     indices = indices[0]
     memory_processor._load_memory_chunk_from_disk(save_path, indices)
     print([memory_processor.memory_chunks[i].text for i in range(len(memory_processor.memory_chunks))])
-
+    print(memory_processor.memory_chunks[0].key_states[0].shape)
 test_knowledge_base()
 
 
