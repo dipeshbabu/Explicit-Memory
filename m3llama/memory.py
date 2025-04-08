@@ -7,8 +7,8 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 import os
-from retriever import Retriever
-from config import M3_LlamaConfig
+from .retriever import Retriever
+from .config import M3_LlamaConfig
 from collections import OrderedDict
 from copy import deepcopy
 # This class implements an explicit memory database that can encode knowledge, store memory to disk,
@@ -97,7 +97,7 @@ class Base_Memory_3():
         self.lru_cache = LRUCache(self.memory_cache_size)
         # Track generated tokens separately for each batch
         self.last_tokens = {}  # batch_idx -> tokens list
-        self.load_path = "/root/autodl-tmp/Explicit-Memory/memory"
+        self.load_path = "/root/autodl-tmp/memory"
         if not os.path.exists(self.load_path):
             os.makedirs(self.load_path, exist_ok=True)
 
@@ -169,8 +169,10 @@ class Base_Memory_3():
             distances, indices = self.vector_db.search(query_embedding.reshape(1, -1), top_k)
         return distances, indices
     
-    def preprocess(self, query: torch.Tensor, update_disk=False, use_cache=False):
+    def preprocess(self, query: torch.Tensor|Dict[str, torch.Tensor], update_disk=False, use_cache=False):
         start = True
+        if not isinstance(query, torch.Tensor):
+            query = query['input_ids']
         for i in range(0, query.size(1), self.memory_update_interval):
             if i+self.memory_update_interval <= query.size(1):
                 memory = self.update(query[:, i:i+self.memory_update_interval], update_disk, use_cache)

@@ -1,6 +1,5 @@
-from utils import load_model
-from memory import Base_Memory_3, M3_cache
-from accelerate import Accelerator
+from m3llama.utils import load_model
+from m3llama.memory import Base_Memory_3, M3_cache
 
 def test_knowledge_base():
     model, tokenizer, retrieval_model = load_model(model_path="/root/autodl-tmp/meta-llama/Llama-3.2-3B")
@@ -16,7 +15,7 @@ def test_knowledge_base():
         "4+4=8",
         "5+5=10"
     ]
-    save_path = "./memory"
+    save_path = "/root/autodl-tmp/memory"
 
     memory_processor.process_knowledge_base(knowledge_base, save_path)
 

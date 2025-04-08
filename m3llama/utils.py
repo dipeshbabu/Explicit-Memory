@@ -1,17 +1,17 @@
-from m3_model import M3_LlamaForCausalLM
-from memory import MemoryKVCache
-from m3_config import M3_LlamaConfig
+from .m3_model import M3_LlamaForCausalLM
+from .memory import MemoryKVCache
+from .m3_config import M3_LlamaConfig
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers.models.llama import modeling_llama
 from accelerate import Accelerator
-from retriever import Retriever
+from .retriever import Retriever
 import torch
 import torch.nn.functional as F
 
 def load_model(model_path: str="/root/autodl-tmp/meta-llama/Llama-3.1-8B", retrieval_model_path: str="/root/autodl-tmp/BAAI/bge-m3") -> tuple[M3_LlamaForCausalLM, AutoTokenizer, MemoryKVCache]:
     tokenizer = AutoTokenizer.from_pretrained(model_path, device_map="auto")
     # tokenizer.add_special_tokens({'pad_token': '<|finetune_right_pad_id|>'})
-    tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.pad_token_id = 128001
     modeling_llama.LlamaConfig = M3_LlamaConfig
     try:
         model = M3_LlamaForCausalLM.from_pretrained(model_path, device_map="auto").half()

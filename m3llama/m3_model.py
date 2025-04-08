@@ -48,7 +48,7 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers.models.llama.configuration_llama import LlamaConfig
-from memory import Base_Memory_3, M3_cache
+from .memory import Base_Memory_3, M3_cache
 import math
 from torch.nn import init
 logger = logging.get_logger(__name__)
@@ -704,14 +704,15 @@ class M3_LlamaModel(LlamaPreTrainedModel):
             mask = input_ids != 128001
             position_ids = mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(mask == 0, 1)
-            for bsz in range(position_ids.shape[0]):
-                for i in range(position_ids.shape[1]):
-                    if bos:
-                        position_ids[bsz, i] += 1
-                    elif position_ids[bsz, i] == 0:
-                        bos = True
-                        position_ids[bsz, i] += 1
-                bos = False
+            position_ids[mask] += 1
+            # for bsz in range(position_ids.shape[0]):
+            #     for i in range(position_ids.shape[1]):
+            #         if bos:
+            #             position_ids[bsz, i] += 1
+            #         elif position_ids[bsz, i] == 0:
+            #             bos = True
+            #             position_ids[bsz, i] += 1
+            #     bos = False
             reference_bos = self.reference_bos.unsqueeze(0).unsqueeze(0).expand(inputs_embeds.shape[0], -1, -1)
             hidden_states = torch.cat([reference_bos, inputs_embeds], dim=1)
             position_ids = torch.cat([torch.zeros(position_ids.shape[0], 1, device=position_ids.device), position_ids], dim=1)
@@ -724,14 +725,16 @@ class M3_LlamaModel(LlamaPreTrainedModel):
                 mask = input_ids != 128001
                 position_ids = mask.long().cumsum(-1) - 1
                 position_ids.masked_fill_(mask == 0, 1)
-                for bsz in range(position_ids.shape[0]):
-                    for i in range(position_ids.shape[1]):
-                        if bos:
-                            position_ids[bsz, i] += self.config.memory_token_length*self.config.num_memory_chunks+1
-                        elif position_ids[bsz, i] == 0:
-                            bos = True
-                            position_ids[bsz, i] += self.config.memory_token_length*self.config.num_memory_chunks+1
-                    bos = False
+                position_ids[mask] += self.config.memory_token_length*self.config.num_memory_chunks+1
+                
+                # for bsz in range(position_ids.shape[0]):
+                #     for i in range(position_ids.shape[1]):
+                #         if bos:
+                #             position_ids[bsz, i] += self.config.memory_token_length*self.config.num_memory_chunks+1
+                #         elif position_ids[bsz, i] == 0:
+                #             bos = True
+                #             position_ids[bsz, i] += self.config.memory_token_length*self.config.num_memory_chunks+1
+                #     bos = False
                 reference_bos = self.reference_bos.unsqueeze(0).unsqueeze(0).expand(inputs_embeds.shape[0], -1, -1)
                 hidden_states = torch.cat([reference_bos, inputs_embeds], dim=1)
                 position_ids = torch.cat([torch.zeros(position_ids.shape[0], 1, device=position_ids.device), position_ids], dim=1)
