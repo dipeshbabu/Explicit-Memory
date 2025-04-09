@@ -8,11 +8,27 @@ if __name__ == "__main__":
     accelerator = Accelerator()
     # query = ["1+1=2, 2+2=4, 3+3="*100, "3+3=6, 4+4="*100]
     query = [
+    [
+        {
+            "role": "user",
+            "content": "4+4=",
+        },
+        {
+            "role": "assistant",
+            "content": "8",
+        }
+    ],
+    [
         {
             "role": "user",
             "content": "1+1=2, 2+2=4, 3+3=6"*100+"4+4=",
+        },
+        {
+            "role": "assistant",
+            "content": "8",
         }
     ]
+]
     model, tokenizer, retrieval_model = load_model("/root/autodl-tmp/model/m3-llama-3.2-3b-instruct")
     # print(model)
     # print(tokenizer)
@@ -25,9 +41,11 @@ if __name__ == "__main__":
     memory_processor.load_from_disk("/root/autodl-tmp/memory")
     formatted_query = tokenizer.apply_chat_template(query, tokenize=False)
     print(formatted_query)
-    query = tokenizer(formatted_query, return_tensors="pt", padding='longest', truncation=True, padding_side='left').input_ids.to(model.device)
+    tokens = tokenizer(formatted_query, return_tensors="pt", padding='longest', truncation=True, padding_side='left')
+    query = tokens.input_ids.to(model.device)
     memories = memory_processor.preprocess(query)
-    output = model(query, memories=memories, memory_processor=memory_processor)
+    model.eval()
+    output = model(query, memories=memories, memory_processor=memory_processor, attention_mask=tokens.attention_mask.to(model.device))
     token_indices = torch.argmax(output.logits, dim=-1)
     # Convert token indices to text
     print(output.logits.shape)

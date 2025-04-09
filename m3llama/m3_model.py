@@ -51,6 +51,7 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 from .memory import Base_Memory_3, M3_cache
 import math
 from torch.nn import init
+from functools import partial
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "meta-llama/Llama-2-7b-hf"
@@ -240,6 +241,7 @@ def m3_sdpa_attention_forward(
     memory_update_interval: Optional[int] = None,
     memory_total_length: Optional[int] = None,
     memory_single_length: Optional[int] = None,
+    use_memory: Optional[bool] = True,
     **kwargs,
 ) -> Tuple[torch.Tensor, None]:
     if hasattr(module, "num_key_value_groups"):
@@ -266,23 +268,26 @@ def m3_sdpa_attention_forward(
     if torch.jit.is_tracing() and isinstance(is_causal, torch.Tensor):
         is_causal = is_causal.item()
     # 现在不对，要分开生成两部分memory mask，再拼起来
-    L, S = query.size(-2), key.size(-2)-memory_total_length-1
+    if use_memory:
+        L, S = query.size(-2), key.size(-2)-memory_total_length
+    else:
+        L, S = query.size(-2), key.size(-2)
     attn_bias = torch.zeros(L, S, dtype=query.dtype, device=query.device)
     temp_mask = torch.ones(L, S, dtype=torch.bool, device=query.device).tril(diagonal=0)
     attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
     attn_bias.to(query.dtype)
-
-    memory_bias = torch.zeros(L, memory_total_length, dtype=query.dtype, device=query.device)
-    memory_mask = torch.zeros(L, memory_total_length, dtype=query.dtype, device=query.device)
-    l = L//memory_update_interval
-    m = memory_total_length//memory_single_length
-    for i in range(0, l+1, 1):
-        for j in range(0, m+1, 1):
-            if i == j:
-                if i*memory_update_interval+memory_update_interval > L:
-                    memory_mask[i*memory_update_interval:, j*memory_single_length:j*memory_single_length+memory_single_length] = 1
-                else:
-                    memory_mask[i*memory_update_interval:i*memory_update_interval+memory_update_interval, j*memory_single_length:j*memory_single_length+memory_single_length] = 1
+    if use_memory:
+        memory_bias = torch.zeros(L, memory_total_length, dtype=query.dtype, device=query.device)
+        memory_mask = torch.zeros(L, memory_total_length, dtype=query.dtype, device=query.device)
+        l = L//memory_update_interval
+        m = memory_total_length//memory_single_length
+        for i in range(0, l+1, 1):
+            for j in range(0, m+1, 1):
+                if i == j:
+                    if i*memory_update_interval+memory_update_interval > L:
+                        memory_mask[i*memory_update_interval:, j*memory_single_length:j*memory_single_length+memory_single_length] = 1
+                    else:
+                        memory_mask[i*memory_update_interval:i*memory_update_interval+memory_update_interval, j*memory_single_length:j*memory_single_length+memory_single_length] = 1
             
     # for i in range(0, L, memory_update_interval):
     #     for j in range(0, memory_total_length, memory_single_length):
@@ -291,10 +296,19 @@ def m3_sdpa_attention_forward(
     #                 memory_mask[i:, j:j+memory_single_length] = 1
     #             else:
     #                 memory_mask[i:i+memory_update_interval, j:j+memory_single_length] = 1
-    memory_bias.masked_fill_(memory_mask.logical_not(), float("-inf"))
-    ref_bos_bias = torch.ones(L, 1, dtype=query.dtype, device=query.device)
-    attn_bias = torch.cat((ref_bos_bias, memory_bias, attn_bias), dim=1)
-    
+        memory_bias.masked_fill_(memory_mask.logical_not(), float("-inf"))
+        attn_bias = torch.cat((attn_bias[:, 0:1], memory_bias, attn_bias[:, 1:]), dim=1)
+    # if attention_mask is not None:
+    #     attention_mask.masked_fill_(attention_mask == torch.finfo(query.dtype).min, float("-inf"))
+    #     pad_q = attn_bias.size(-2)-attention_mask.size(-2)
+    #     pad_k = attn_bias.size(-1)-attention_mask.size(-1)
+    #     attention_mask = torch.nn.functional.pad(attention_mask, (pad_k,0, pad_q,0), "constant", 0)
+    #     attn_bias = attn_bias.unsqueeze(0).unsqueeze(0).expand(attention_mask.size(0), attention_mask.size(1), -1, -1)
+    #     attn_bias[:, :, pad_q:, pad_k:] += attention_mask
+    attn_bias.masked_fill_(attn_bias == float("-inf"), torch.finfo(query.dtype).min)
+    # else:
+    #     ref_bos_bias = torch.ones(L, 1, dtype=query.dtype, device=query.device)
+    #     attn_bias = torch.cat((ref_bos_bias, attn_bias), dim=1)
     attn_output = torch.nn.functional.scaled_dot_product_attention(
         query,
         key,
@@ -370,8 +384,8 @@ class M3_LlamaAttention(nn.Module):
         if memories is not None:
             memory_key_states = memories.key_states[self.layer_idx]
             memory_value_states = memories.value_states[self.layer_idx]
-            key_states = torch.cat((memory_key_states, key_states), dim=2)
-            value_states = torch.cat((memory_value_states, value_states), dim=2)
+            key_states = torch.cat((key_states[:, :, 0:1, :], memory_key_states, key_states[:, :, 1:, :]), dim=2)
+            value_states = torch.cat((value_states[:, :, 0:1, :], memory_value_states, value_states[:, :, 1:, :]), dim=2)
             memory_total_length = memory_key_states.size(-2)
             memory_single_length = self.config.memory_token_length*self.config.num_memory_chunks
             memory_update_interval = self.config.memory_update_interval
@@ -400,6 +414,7 @@ class M3_LlamaAttention(nn.Module):
                 memory_total_length=memory_total_length,
                 memory_single_length=memory_single_length,
                 memory_update_interval=memory_update_interval,
+                use_memory=True,
                 **kwargs,
             )
         elif is_encoding_memory:
@@ -411,11 +426,11 @@ class M3_LlamaAttention(nn.Module):
                 attention_mask,
                 dropout=0.0 if not self.training else self.attention_dropout,
                 scaling=self.scaling,
-                is_causal=False,
+                is_causal=True,
                 **kwargs,
             )
         else:
-            attn_output, attn_weights = attention_interface(
+            attn_output, attn_weights = m3_sdpa_attention_forward(
                 self,
                 query_states,
                 key_states,
@@ -423,6 +438,7 @@ class M3_LlamaAttention(nn.Module):
                 attention_mask,
                 dropout=0.0 if not self.training else self.attention_dropout,
                 scaling=self.scaling,
+                use_memory=False,
                 **kwargs,
             )
 
@@ -756,13 +772,18 @@ class M3_LlamaModel(LlamaPreTrainedModel):
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
-        memory_layers = map(int, self.config.memory_layers.keys())
+        memory_layers = list(map(int, self.config.memory_layers.keys()))
         for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
+            
             if self.gradient_checkpointing and self.training:
+                if memories is not None:
+                    layer_fn = partial(decoder_layer.__call__, memories=memories if i in memory_layers else None, is_encoding_memory=is_encoding_memory)
+                else:
+                    layer_fn = decoder_layer.__call__
                 layer_outputs = self._gradient_checkpointing_func(
-                    decoder_layer.__call__,
+                    layer_fn,
                     hidden_states,
                     causal_mask,
                     position_ids,
@@ -771,8 +792,6 @@ class M3_LlamaModel(LlamaPreTrainedModel):
                     use_cache,
                     cache_position,
                     position_embeddings,
-                    memories=memories if i in memory_layers else None,
-                    is_encoding_memory=is_encoding_memory,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -1054,6 +1073,7 @@ class M3_LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
 
         loss = None
         if labels is not None:
+            logits = logits[:, 1:, :]
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
 
         if not return_dict:

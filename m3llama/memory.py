@@ -4,7 +4,7 @@ import torch
 import faiss
 import pickle
 import numpy as np
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 import os
 from .retriever import Retriever
@@ -169,7 +169,8 @@ class Base_Memory_3():
             distances, indices = self.vector_db.search(query_embedding.reshape(1, -1), top_k)
         return distances, indices
     
-    def preprocess(self, query: torch.Tensor|Dict[str, torch.Tensor], update_disk=False, use_cache=False):
+    def preprocess(self, query: torch.Tensor|Any, update_disk=False, use_cache=False):
+        self.model.eval()
         start = True
         if not isinstance(query, torch.Tensor):
             query = query['input_ids']
@@ -185,6 +186,7 @@ class Base_Memory_3():
             else:
                 memory_keys = [torch.cat([memory_keys[i], memory.key_states[i]], dim=2) for i in range(self.model.config.num_hidden_layers)]
                 memory_values = [torch.cat([memory_values[i], memory.value_states[i]], dim=2) for i in range(self.model.config.num_hidden_layers)]
+        self.model.train()
         return Memory(memory_keys, memory_values)
 
     def update(self, query: torch.Tensor, update_disk: bool=True, use_cache: bool=True):
