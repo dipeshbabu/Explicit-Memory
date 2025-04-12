@@ -5,8 +5,8 @@ from typing import List
 
 class Retriever:
     def __init__(self, model_name: str):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name, device_map="auto")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto")
+        self.model = AutoModel.from_pretrained(model_name, device_map="auto").half()
         self.config = self.model.config
         self.model.eval()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
