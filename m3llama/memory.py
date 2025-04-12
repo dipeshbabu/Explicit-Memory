@@ -7,10 +7,13 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 import os
-from .retriever import Retriever
-from .config import M3_LlamaConfig
+import sys
+sys.path.append('/root/autodl-tmp/Explicit-Memory/m3llama')
+from retriever import Retriever
+from config import M3_LlamaConfig
 from collections import OrderedDict
 from copy import deepcopy
+from tqdm import tqdm
 # This class implements an explicit memory database that can encode knowledge, store memory to disk,
 # load memory from disk, and retrieve memory to return a MemoryCache that can be directly used in inference
 # Stores a vector database for querying, computed from plain text
@@ -97,7 +100,7 @@ class Base_Memory_3():
         self.lru_cache = LRUCache(self.memory_cache_size)
         # Track generated tokens separately for each batch
         self.last_tokens = {}  # batch_idx -> tokens list
-        self.load_path = "/root/autodl-tmp/memory"
+        self.load_path = "/root/autodl-tmp/Explicit-Memory/memory"
         if not os.path.exists(self.load_path):
             os.makedirs(self.load_path, exist_ok=True)
 
@@ -110,7 +113,7 @@ class Base_Memory_3():
         chunk_embeddings = []
         
         idx = 0
-        for text in knowledge_base:
+        for text in tqdm(knowledge_base):
             # Split text into chunks and left padding
             tokens = self.tokenizer(text, return_tensors="pt", truncation=True, add_special_tokens=False)
             remainder = tokens.input_ids.size(1) % self.memory_length

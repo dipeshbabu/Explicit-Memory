@@ -48,7 +48,9 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers.models.llama.configuration_llama import LlamaConfig
-from .memory import Base_Memory_3, M3_cache
+import sys
+sys.path.append('/root/autodl-tmp/Explicit-Memory/m3llama')
+from memory import Base_Memory_3, M3_cache
 import math
 from torch.nn import init
 from functools import partial

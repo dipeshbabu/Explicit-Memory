@@ -1,10 +1,12 @@
-from .m3_model import M3_LlamaForCausalLM
-from .memory import MemoryKVCache
-from .m3_config import M3_LlamaConfig
+import sys
+sys.path.append('/root/autodl-tmp/Explicit-Memory/m3llama')
+from m3_model import M3_LlamaForCausalLM
+from memory import MemoryKVCache
+from m3_config import M3_LlamaConfig
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers.models.llama import modeling_llama
 from accelerate import Accelerator
-from .retriever import Retriever
+from retriever import Retriever
 import torch
 import torch.nn.functional as F
 
